@@ -1,0 +1,35 @@
+name: CD
+
+# Deploys only after a successful CI run on main.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    # Self-hosted runner installed on the Ubuntu VM (outbound HTTPS only, no inbound SSH needed).
+    runs-on: [self-hosted, linux]
+    env:
+      IMAGE_PREFIX: docker.io/${{ vars.DOCKERHUB_USERNAME }}
+      DEPLOY_DIR: /opt/fullstack-app   # holds the .env with DB secrets, created once on the VM
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Deploy the published version
+        run: |
+          export IMAGE_TAG=sha-$(echo ${{ github.event.workflow_run.head_sha }} | cut -c1-7)
+          # Fixed project name => same mysql-data volume across deployments (data kept).
+          DC="docker compose -p fullstack-app --env-file $DEPLOY_DIR/.env"
+          $DC pull frontend backend
+          $DC up -d --no-build
+          docker image prune -f
+
+      - name: Smoke test
+        run: |
+          for i in $(seq 30); do curl -sf http://localhost:4200/api/user/all && exit 0; sleep 5; done
+          exit 1
